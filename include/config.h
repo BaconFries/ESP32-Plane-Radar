@@ -28,6 +28,8 @@ constexpr gpio_num_t kBootPin = GPIO_NUM_9;
 constexpr unsigned long kBootResetHoldMs = 3000UL;
 /** Ignore BOOT taps shorter than this (debounce). */
 constexpr unsigned long kBootTapMinMs = 40UL;
+/** Second tap within this window counts as a double-tap (screen cycle). */
+constexpr unsigned long kBootDoubleTapMs = 550UL;
 
 // --- Display: GC9A01 1.28" round 240×240 (SPI) ---
 constexpr gpio_num_t kDisplayPinRst = GPIO_NUM_0;
@@ -54,6 +56,20 @@ constexpr unsigned long kAdsbFetchIntervalMs = 3000;
 constexpr float kAdsbFetchRadiusScale = 1.0f;
 /** false = hide aircraft with alt_baro "ground"; true = show them too. */
 constexpr bool kAdsbShowGroundAircraft = false;
+
+/** Open-Meteo refresh while idle / on first empty radar. */
+constexpr unsigned long kWeatherRefreshMs = 30UL * 60UL * 1000UL;
+/** Show clock/weather when no aircraft inside the outer ring. */
+constexpr bool kIdleClockWhenEmpty = true;
+
+/** Portal-tracked flight: poll live position (adsb.fi callsign). */
+constexpr unsigned long kFlightTrackPollMs = 5000;
+/** Clear track after this long with no ADS-B hit (was seen before). */
+constexpr unsigned long kFlightTrackLostMs = 20UL * 60UL * 1000UL;
+/** Clear after sitting on ground this long (post-airborne). */
+constexpr unsigned long kFlightTrackLandedMs = 10UL * 60UL * 1000UL;
+/** Give up searching if never seen. */
+constexpr unsigned long kFlightTrackSearchMs = 6UL * 60UL * 60UL * 1000UL;
 
 // --- UI colors (RGB565) — status screens ---
 constexpr uint16_t kColorBlack = 0x0000;

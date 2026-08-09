@@ -125,6 +125,7 @@ void unitsReset() {
   if (s_prefs.begin(kPrefsNamespace, false)) {
     s_prefs.remove(kPrefsMilesKey);
     s_prefs.remove(kPrefsRunwaysKey);
+    s_prefs.remove("showMap");  // leftover from removed basemap toggle
     s_prefs.end();
   }
 }

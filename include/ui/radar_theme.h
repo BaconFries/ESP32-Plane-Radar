@@ -19,10 +19,10 @@ constexpr int kCardinalSouthOffsetY = 3;
 /** Gap between scale label right edge and outer ring on the east spoke (px). */
 constexpr int kScaleGapFromOuterRing = 6;
 
-/** Target cap height (px) for N/S/E/W. */
-constexpr int kCardinalLabelHeightPx = 14;
+/** Target cap height (px) for N/S/E/W (~FreeSansBold18pt). */
+constexpr int kCardinalLabelHeightPx = 22;
 /** Scale label is this many px shorter than cardinals. */
-constexpr int kScaleBelowCardinalPx = 3;
+constexpr int kScaleBelowCardinalPx = 2;
 
 constexpr int kRingCount = 4;
 

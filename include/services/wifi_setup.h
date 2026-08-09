@@ -1,5 +1,7 @@
 #pragma once
 
+#include <cstdint>
+
 /** True when the next boot should show the setup screen first (after credential reset). */
 bool wifiShowsSetupScreenOnBoot();
 void wifiResetCredentialsAndReboot();
@@ -12,7 +14,12 @@ void wifiLoop();
 bool wifiBootButtonPressed();
 /** GPIO + interrupt setup; call once early in setup(). */
 void bootButtonInit();
-/** Latched short tap (survives blocking HTTP/display work). */
+/**
+ * Consume queued short taps (survives blocking HTTP/display work).
+ * Returns how many taps were latched since the last call.
+ */
+uint8_t bootButtonConsumeTapCount();
+/** True if at least one short tap was latched (consumes all queued taps). */
 bool bootButtonConsumeTap();
 /** Call each loop iteration; triggers WiFi reset on long hold. */
 void bootButtonPollLongPress();

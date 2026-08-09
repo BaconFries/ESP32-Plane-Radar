@@ -10,12 +10,11 @@
 #include "hardware/display.h"
 #include "hardware/display_font.h"
 #include "services/adsb_client.h"
+#include "services/flight_track.h"
 #include "services/radar_location.h"
 #include "ui/radar_range.h"
 #include "ui/radar_theme.h"
 #include "ui/runway_overlay.h"
-
-namespace fonts = lgfx::v1::fonts;
 
 namespace ui {
 namespace radar {
@@ -41,8 +40,8 @@ bool s_scale_use_vlw = false;
 float s_cardinal_vlw_size = 0.56f;
 float s_scale_vlw_size = 0.50f;
 float s_tag_vlw_size = 0.56f;
-const lgfx::GFXfont* s_cardinal_gfx = &fonts::FreeSansBold12pt7b;
-const lgfx::GFXfont* s_scale_gfx = &fonts::FreeSansBold9pt7b;
+const lgfx::GFXfont* s_cardinal_gfx = &fonts::FreeSansBold18pt7b;
+const lgfx::GFXfont* s_scale_gfx = &fonts::FreeSansBold12pt7b;
 const lgfx::GFXfont* s_tag_gfx = &fonts::FreeSansBold12pt7b;
 
 bool s_tag_label_metrics_ready = false;
@@ -123,15 +122,15 @@ void initLabelMetrics() {
     s_scale_use_vlw = true;
     s_scale_vlw_size = findVlwSizeForHeight(scale_target);
   } else {
-    const lgfx::GFXfont* cardinal_candidates[] = {&fonts::FreeSansBold12pt7b,
-                                                  &fonts::FreeSansBold9pt7b};
+    const lgfx::GFXfont* cardinal_candidates[] = {&fonts::FreeSansBold18pt7b,
+                                                  &fonts::FreeSansBold12pt7b};
     s_cardinal_gfx =
         pickGfxFontClosest(cardinal_target, cardinal_candidates, 2);
     s_cardinal_use_vlw = false;
 
     const int cardinal_h = measureGfxHeight(*s_cardinal_gfx);
     const int scale_target = cardinal_h - radar::kScaleBelowCardinalPx;
-    const lgfx::GFXfont* scale_candidates[] = {&fonts::FreeSansBold9pt7b,
+    const lgfx::GFXfont* scale_candidates[] = {&fonts::FreeSansBold18pt7b,
                                                &fonts::FreeSansBold12pt7b};
     s_scale_gfx = pickGfxFontClosest(scale_target, scale_candidates, 2);
     s_scale_use_vlw = false;
@@ -533,9 +532,17 @@ void drawAircraft() {
     const size_t i = items[d].index;
     const int x = items[d].x;
     const int y = items[d].y;
+    const bool tracked =
+        services::flight_track::isActive() &&
+        (strcasecmp(planes[i].callsign, services::flight_track::callsign()) ==
+             0 ||
+         strcasecmp(planes[i].callsign,
+                    services::flight_track::adsbCallsign()) == 0);
+    const uint16_t ac_color =
+        tracked ? radar::kColorTagType : radar::kColorAircraft;
     drawSpeedVector(x, y, planes[i].nose_deg, planes[i].track_deg,
                     planes[i].gs_knots, radar::kColorTrackVector);
-    drawHeadingTriangle(x, y, planes[i].nose_deg, radar::kColorAircraft);
+    drawHeadingTriangle(x, y, planes[i].nose_deg, ac_color);
   }
   for (size_t d = 0; d < draw_count; ++d) {
     const size_t i = items[d].index;
@@ -645,10 +652,10 @@ void drawStaticGrid(Gfx& gfx) {
   const int cy = radar::kCenterY;
   const int grid_r = radar::kGridOuterRadius;
 
+  initPalette();
   gfx.fillScreen(radar::kColorBackground);
   drawRings(cx, cy, grid_r);
   drawCrosshairs(cx, cy, grid_r, radar::kColorGrid);
-  initPalette();
   runway::drawLargeAirportRunways(gfx);
   drawCenterDot(cx, cy);
   drawCardinalLabels();
@@ -657,29 +664,13 @@ void drawStaticGrid(Gfx& gfx) {
 }
 
 bool ensureFrameSprite() {
-  if (s_frame_ready) {
-    return true;
-  }
-  s_frame.setColorDepth(16);
-  if (!s_frame.createSprite(radar::kSize, radar::kSize)) {
-    Serial.println("radar: frame sprite alloc failed");
-    return false;
-  }
-  s_frame_ready = true;
-  return true;
+  // Disabled on ESP32-C3: 16-bit needs ~115 KB contiguous heap (often unavailable
+  // with WiFi/TLS), and 8-bit RGB332 produced wrong colors (brown water).
+  return false;
 }
 
-// Double-buffered frame: composite the grid AND aircraft into the off-screen
-// sprite, then blit it to the panel in a single pushSprite. Because the panel
-// is updated in one pass, labels never show an erase/redraw gap — no flicker.
 void renderFrame() {
-  drawStaticGrid(s_frame);  // opens its own DrawScope(s_frame)
-  {
-    const DrawScope scope(s_frame);
-    drawAircraft();
-  }
-  s_frame.pushSprite(0, 0);
-  tft.setTextDatum(textdatum_t::top_left);
+  // Unused while sprite path is disabled.
 }
 
 }  // namespace
@@ -687,13 +678,6 @@ void renderFrame() {
 void radarDisplayDraw() {
   initPalette();
   initLabelMetrics();
-
-  if (ensureFrameSprite()) {
-    renderFrame();
-    return;
-  }
-
-  // Fallback when the sprite can't be allocated: draw straight to the panel.
   const DrawScope scope(tft);
   drawStaticGrid(tft);
   drawAircraft();
@@ -701,14 +685,31 @@ void radarDisplayDraw() {
 }
 
 void radarDisplayRefreshAircraft() {
-  initPalette();
+  radarDisplayDraw();
+}
 
-  if (ensureFrameSprite()) {
-    renderFrame();
+size_t radarDisplayInsideCount() {
+  const size_t n = services::adsb::aircraftCount();
+  const services::adsb::Aircraft* planes = services::adsb::aircraftList();
+  size_t inside = 0;
+  for (size_t i = 0; i < n; ++i) {
+    float dx_km = 0.0f;
+    float dy_km = 0.0f;
+    float dist_km = 0.0f;
+    offsetKmFromCenter(planes[i].lat, planes[i].lon, &dx_km, &dy_km, &dist_km);
+    if (isInsideOuterRingKm(dist_km)) {
+      ++inside;
+    }
+  }
+  return inside;
+}
+
+void radarDisplayReleaseFrameBuffer() {
+  if (!s_frame_ready) {
     return;
   }
-
-  radarDisplayDraw();
+  s_frame.deleteSprite();
+  s_frame_ready = false;
 }
 
 }  // namespace ui

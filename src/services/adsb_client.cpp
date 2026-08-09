@@ -215,6 +215,10 @@ bool fetchUpdate(double center_lat, double center_lon, float fetch_radius_km) {
   url += "/dist/";
   url += String(dist_nm, 1);
 
+  Serial.printf("adsb: HTTPS (free heap %u, maxAlloc %u)\n",
+                static_cast<unsigned>(ESP.getFreeHeap()),
+                static_cast<unsigned>(ESP.getMaxAllocHeap()));
+
   WiFiClientSecure client;
   client.setInsecure();
 

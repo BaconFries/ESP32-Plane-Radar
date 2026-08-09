@@ -50,7 +50,7 @@ void saveMilesFromPortal(const char* checkbox_value);
 void saveRunwaysFromPortal(const char* checkbox_value);
 void formatRing3Label(char* buf, size_t len, float ring3_km, bool use_miles);
 void formatCurrentRing3Label(char* buf, size_t len);
-/** Reset distance units to km (e.g. with WiFi credential wipe). */
+/** Reset distance units / overlay prefs (e.g. with WiFi credential wipe). */
 void unitsReset();
 
 }  // namespace ui::radar

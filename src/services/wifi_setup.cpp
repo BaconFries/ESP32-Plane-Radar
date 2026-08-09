@@ -4,6 +4,8 @@
 #include <WiFiManager.h>
 
 #include <cstdio>
+#include <cstdlib>
+#include <cstring>
 
 #include <Preferences.h>
 #include <esp_system.h>
@@ -14,12 +16,16 @@
 #endif
 
 #include "config.h"
+#include "services/adsb_client.h"
+#include "services/flight_track.h"
+#include "services/portal_features.h"
+#include "services/portal_location_head.h"
 #include "services/radar_location.h"
 #include "ui/radar_range.h"
 #include "ui/status_screens.h"
 
 portMUX_TYPE s_boot_mux = portMUX_INITIALIZER_UNLOCKED;
-volatile bool s_boot_tap_pending = false;
+volatile uint8_t s_boot_tap_count = 0;
 volatile bool s_boot_is_down = false;
 volatile unsigned long s_boot_down_ms = 0;
 bool s_long_press_handled = false;
@@ -35,7 +41,10 @@ void IRAM_ATTR onBootButtonIsr() {
   } else if (s_boot_is_down) {
     const unsigned long held = now - s_boot_down_ms;
     if (held >= config::kBootTapMinMs && held < config::kBootResetHoldMs) {
-      s_boot_tap_pending = true;
+      // Count taps (do not coalesce) so double-tap survives blocking HTTP.
+      if (s_boot_tap_count < 10) {
+        ++s_boot_tap_count;
+      }
     }
     s_boot_is_down = false;
   }
@@ -68,9 +77,13 @@ void stopLanWebPortal();
 bool wifiLinkUp();
 
 constexpr int kCoordParamLen = 20;
+constexpr int kZipParamLen = 10;
 constexpr char kCoordInputAttrs[] =
     " type=\"number\" step=\"0.000001\"";
+constexpr char kZipInputAttrs[] = " type=\"text\" inputmode=\"numeric\" maxlength=\"10\" placeholder=\"US ZIP (optional if lat/lon set)\"";
 
+WiFiManagerParameter s_param_zip("radar_zip", "US ZIP (fills lat/lon; preferred)", "",
+                                 kZipParamLen, kZipInputAttrs);
 WiFiManagerParameter s_param_lat("radar_lat", "Latitude (deg)", "0",
                                 kCoordParamLen, kCoordInputAttrs);
 WiFiManagerParameter s_param_lon("radar_lon", "Longitude (deg)", "0",
@@ -91,6 +104,7 @@ void refreshPortalParamDefaults() {
   snprintf(lon_buf, sizeof(lon_buf), "%.6f", services::location::lon());
   s_param_lat.setValue(lat_buf, kCoordParamLen);
   s_param_lon.setValue(lon_buf, kCoordParamLen);
+  s_param_zip.setValue(services::location::zip(), kZipParamLen);
   snprintf(s_miles_checkbox_attrs, sizeof(s_miles_checkbox_attrs), "type=\"checkbox\"%s",
            ui::radar::useMiles() ? " checked" : "");
   s_param_miles.setValue("T", 2);
@@ -100,20 +114,260 @@ void refreshPortalParamDefaults() {
 }
 
 void onPortalParamsSaved() {
-  if (!services::location::saveFromStrings(s_param_lat.getValue(),
-                                           s_param_lon.getValue())) {
+  if (!services::location::saveFromPortal(s_param_lat.getValue(),
+                                          s_param_lon.getValue(),
+                                          s_param_zip.getValue())) {
     Serial.println("Invalid lat/lon in portal — keeping previous location");
   }
   ui::radar::saveMilesFromPortal(s_param_miles.getValue());
   ui::radar::saveRunwaysFromPortal(s_param_runways.getValue());
 }
 
+void appendPortalPageChrome(String& html, const char* title, const char* path) {
+  html += F("<!DOCTYPE html><html><head><meta charset='utf-8'>"
+            "<meta name='viewport' content='width=device-width,initial-scale=1'>");
+  if (strcmp(path, "/traffic") == 0) {
+    html += F("<meta http-equiv='refresh' content='5'>");
+  }
+  html += F("<title>");
+  html += title;
+  html += F("</title><style>"
+            "body{font-family:system-ui,sans-serif;background:#111;color:#eee;"
+            "margin:16px;max-width:720px}"
+            "a{color:#8ec8ff}table{width:100%;border-collapse:collapse;margin-top:12px}"
+            "th,td{text-align:left;padding:8px 6px;border-bottom:1px solid #333;"
+            "font-size:14px}th{color:#9ab}h1{font-size:1.35rem;margin:0 0 6px}"
+            "h2{font-size:1.05rem;margin:0 0 8px}"
+            ".nav{display:flex;flex-wrap:wrap;gap:8px;margin:0 0 14px}"
+            ".nav a{display:inline-block;padding:8px 12px;border-radius:6px;"
+            "background:#1a2332;border:1px solid #2a3a50;color:#cde;text-decoration:none;"
+            "font-size:14px}"
+            ".nav a.on{background:#1fa3ec;border-color:#1fa3ec;color:#fff}"
+            ".urlbox{background:#1a2332;border:1px solid #2a3a50;border-radius:8px;"
+            "padding:10px 12px;margin:0 0 14px;font-size:13px;color:#9ab}"
+            ".urlbox code{color:#8ec8ff;word-break:break-all}"
+            ".meta{color:#889;font-size:13px;margin-bottom:8px}"
+            ".card{background:#1a2332;border:1px solid #2a3a50;border-radius:8px;"
+            "padding:12px;margin:12px 0}"
+            "label{display:block;margin:8px 0 4px;font-size:13px;color:#9ab}"
+            "input[type=text]{width:100%;padding:10px;border-radius:6px;border:1px solid #345;"
+            "background:#0d1520;color:#fff;box-sizing:border-box}"
+            "button{margin-top:10px;padding:10px 14px;background:#1fa3ec;color:#fff;"
+            "border:0;border-radius:6px;font-size:15px}"
+            "</style></head><body>");
+  html += F("<p class='nav'>"
+            "<a href='/'>Portal home</a>"
+            "<a href='/param'>Setup</a>"
+            "<a href='/traffic'");
+  if (strcmp(path, "/traffic") == 0) {
+    html += F(" class='on'");
+  }
+  html += F(">Live traffic</a>"
+            "<a href='/track'");
+  if (strcmp(path, "/track") == 0) {
+    html += F(" class='on'");
+  }
+  html += F(">Track flight</a></p>");
+  html += F("<h1>");
+  html += title;
+  html += F("</h1><div class='urlbox'>Bookmark this page:<br><code>http://");
+  html += config::kPortalHostUrl;
+  html += path;
+  html += F("</code>");
+  if (wifiLinkUp()) {
+    html += F("<br>or <code>http://");
+    html += WiFi.localIP().toString();
+    html += path;
+    html += F("</code>");
+  }
+  html += F("</div>");
+}
+
+void handleTrafficPage() {
+  if (!s_wm.server) {
+    return;
+  }
+  String html;
+  html.reserve(4600);
+  appendPortalPageChrome(html, "Live traffic", "/traffic");
+  html += F("<p class='meta'>Aircraft from the last ADS-B fetch · auto-refresh 5s · "
+            "pick a callsign then open <a href='/track'>Track flight</a></p>");
+
+  const size_t n = services::adsb::aircraftCount();
+  const services::adsb::Aircraft* planes = services::adsb::aircraftList();
+  char meta[80];
+  snprintf(meta, sizeof(meta), "<p class='meta'>%u aircraft in last ADS-B fetch</p>",
+           static_cast<unsigned>(n));
+  html += meta;
+
+  if (n == 0) {
+    html += F("<p>No aircraft in range right now.</p>");
+  } else {
+    html += F("<table><thead><tr>"
+              "<th>Flight</th><th>Type</th><th>Alt</th>"
+              "<th>Track</th><th>GS</th></tr></thead><tbody>");
+    for (size_t i = 0; i < n; ++i) {
+      const char* cs =
+          planes[i].callsign[0] != '\0' ? planes[i].callsign : "—";
+      const char* ty = planes[i].type[0] != '\0' ? planes[i].type : "—";
+      const char* alt = planes[i].alt[0] != '\0' ? planes[i].alt : "—";
+      char row[160];
+      snprintf(row, sizeof(row),
+               "<tr><td>%s</td><td>%s</td><td>%s</td><td>%.0f°</td><td>%.0f kt</td></tr>",
+               cs, ty, alt, static_cast<double>(planes[i].track_deg),
+               static_cast<double>(planes[i].gs_knots));
+      html += row;
+    }
+    html += F("</tbody></table>");
+  }
+  html += F("</body></html>");
+  s_wm.server->send(200, "text/html", html);
+}
+
+void appendTrackStatusHtml(String& html) {
+  const auto& st = services::flight_track::status();
+  if (!st.active) {
+    html += F("<p class='meta'>No flight is being tracked.</p>");
+    return;
+  }
+  html += F("<div class='card'><h2>Current track</h2>");
+  char line[192];
+  snprintf(line, sizeof(line), "<p><b>%s</b> · %s</p>", st.callsign,
+           st.phase_label[0] ? st.phase_label : "—");
+  html += line;
+  if (st.adsb_callsign[0] && strcmp(st.adsb_callsign, st.callsign) != 0) {
+    snprintf(line, sizeof(line),
+             "<p class='meta'>ADS-B callsign: %s</p>", st.adsb_callsign);
+    html += line;
+  }
+  if (st.airline[0]) {
+    snprintf(line, sizeof(line), "<p>%s</p>", st.airline);
+    html += line;
+  }
+  if (st.route_line[0]) {
+    snprintf(line, sizeof(line), "<p>%s</p>", st.route_line);
+    html += line;
+  }
+  {
+    const char* out_t = st.have_takeoff ? st.takeoff_label : "—";
+    if (st.have_landing) {
+      snprintf(line, sizeof(line), "<p>Out %s · In %s</p>", out_t,
+               st.landing_label);
+    } else if (st.eta_label[0]) {
+      snprintf(line, sizeof(line), "<p>Out %s · ETA %s</p>", out_t,
+               st.eta_label);
+    } else {
+      snprintf(line, sizeof(line), "<p>Out %s · In —</p>", out_t);
+    }
+    html += line;
+  }
+  snprintf(line, sizeof(line),
+           "<p>Alt %s · GS %.0f kt · Track %.0f°</p>",
+           st.alt[0] ? st.alt : "—", static_cast<double>(st.gs_knots),
+           static_cast<double>(st.track_deg));
+  html += line;
+  if (st.dist_km >= 0.0f) {
+    snprintf(line, sizeof(line), "<p>Distance from radar: %.1f km</p>",
+             static_cast<double>(st.dist_km));
+    html += line;
+  }
+  html += F("<form method='POST' action='/track' style='margin-top:10px'>"
+            "<input type='hidden' name='clear' value='1'>"
+            "<button type='submit'>Stop tracking</button></form></div>");
+}
+
+void handleTrackStatusFragment() {
+  if (!s_wm.server) {
+    return;
+  }
+  String html;
+  html.reserve(1024);
+  appendTrackStatusHtml(html);
+  s_wm.server->send(200, "text/html", html);
+}
+
+void handleTrackPage() {
+  if (!s_wm.server) {
+    return;
+  }
+  if (s_wm.server->method() == HTTP_POST) {
+    if (s_wm.server->hasArg("clear")) {
+      services::flight_track::clear();
+    } else if (s_wm.server->hasArg("callsign")) {
+      const String cs = s_wm.server->arg("callsign");
+      if (!services::flight_track::start(cs.c_str())) {
+        s_wm.server->send(400, "text/plain", "Invalid flight / callsign");
+        return;
+      }
+    }
+    s_wm.server->sendHeader("Location", "/track", true);
+    s_wm.server->send(303, "text/plain", "");
+    return;
+  }
+
+  String html;
+  html.reserve(4600);
+  appendPortalPageChrome(html, "Track a flight", "/track");
+  html += F("<p class='meta'>Enter a flight number (e.g. DL2460) or ADS-B callsign "
+            "(e.g. DAL2460). Status updates below without clearing this form. "
+            "On the device, double-tap BOOT until the track screen is shown "
+            "(or leave Auto mode when the local radar is empty).</p>"
+            "<div id='track-status'>");
+  appendTrackStatusHtml(html);
+  html += F("</div>"
+            "<div class='card'><h2>Start tracking</h2>"
+            "<form method='POST' action='/track'>"
+            "<label for='callsign'>Flight / callsign</label>"
+            "<input id='callsign' name='callsign' type='text' maxlength='8' "
+            "placeholder='DL2460' autocomplete='off' required>"
+            "<button type='submit'>Start tracking</button>"
+            "</form></div>"
+            "<script>"
+            "(function(){"
+            "function refresh(){"
+            "var el=document.getElementById('track-status');"
+            "if(!el)return;"
+            "fetch('/track/status').then(function(r){return r.text();})"
+            ".then(function(t){el.innerHTML=t;})"
+            ".catch(function(){});"
+            "}"
+            "setInterval(refresh,8000);"
+            "})();"
+            "</script>"
+            "</body></html>");
+  s_wm.server->send(200, "text/html", html);
+}
+
+void onWebServerReady() {
+  if (!s_wm.server) {
+    return;
+  }
+  s_wm.server->on("/traffic", HTTP_GET, handleTrafficPage);
+  s_wm.server->on("/track", HTTP_ANY, handleTrackPage);
+  s_wm.server->on("/track/status", HTTP_GET, handleTrackStatusFragment);
+  Serial.println("Portal: /traffic and /track ready");
+}
+
 void attachPortalParams(WiFiManager& wm) {
   refreshPortalParamDefaults();
+  wm.addParameter(&s_param_zip);
   wm.addParameter(&s_param_lat);
   wm.addParameter(&s_param_lon);
   wm.addParameter(&s_param_miles);
   wm.addParameter(&s_param_runways);
+  wm.setShowInfoUpdate(false);
+  // Own "Setup" page for ZIP/lat/lon (not on the WiFi form).
+  // Include "custom" so the features panel is actually rendered on the menu.
+  wm.setParamsPage(true);
+  std::vector<const char*> menu = {"wifi", "param", "custom", "info", "exit"};
+  wm.setMenu(menu);
+
+  static String s_portal_head;
+  s_portal_head = String(kPortalFeaturesHeadCss);
+  s_portal_head += kPortalLocationHeadHtml;
+  wm.setCustomHeadElement(s_portal_head.c_str());
+  wm.setCustomMenuHTML(kPortalFeaturesMenuHtml);
+  wm.setWebServerCallback(onWebServerReady);
   wm.setSaveParamsCallback(onPortalParamsSaved);
 }
 
@@ -368,15 +622,15 @@ bool wifiBootButtonPressed() {
 
 void bootButtonInit() { initBootButton(); }
 
-bool bootButtonConsumeTap() {
+uint8_t bootButtonConsumeTapCount() {
   portENTER_CRITICAL(&s_boot_mux);
-  const bool tap = s_boot_tap_pending;
-  if (tap) {
-    s_boot_tap_pending = false;
-  }
+  const uint8_t n = s_boot_tap_count;
+  s_boot_tap_count = 0;
   portEXIT_CRITICAL(&s_boot_mux);
-  return tap;
+  return n;
 }
+
+bool bootButtonConsumeTap() { return bootButtonConsumeTapCount() > 0; }
 
 void bootButtonPollLongPress() {
   if (wifiBootButtonPressed()) {

@@ -11,8 +11,6 @@
 #include "hardware/display.h"
 #include "hardware/display_font.h"
 
-namespace fonts = lgfx::v1::fonts;
-
 namespace {
 
 constexpr int kLineGap = 6;
@@ -209,16 +207,44 @@ void statusScreenConnectingTick() {
 }
 
 void statusScreenPortal() {
-  const TextLine lines[] = {
-      {"Wi-Fi setup", 1.15f, &kPortalGfxTitle},
-      {"1. Join network:", 1.05f, &kPortalGfxBody},
-      {config::kPortalApName, 1.12f, &kPortalGfxEmphasis},
-      {"2. Open in browser:", 1.05f, &kPortalGfxBody},
-      {config::kPortalHostUrl, 1.12f, &kPortalGfxEmphasis},
-      {"or 192.168.4.1", 1.0f, &kPortalGfxBody},
+  // Crisp bitmap fonts — 12pt emphasis, 9pt labels (fits round bezel cleanly).
+  constexpr int kPortalGap = 6;
+  const lgfx::GFXfont* fonts_line[] = {
+      &fonts::FreeSansBold12pt7b, &fonts::FreeSansBold9pt7b,
+      &fonts::FreeSansBold12pt7b, &fonts::FreeSansBold9pt7b,
+      &fonts::FreeSansBold12pt7b, &fonts::FreeSansBold9pt7b,
   };
-  drawTextBlock(config::kColorYellow, config::kTextOnYellow, lines,
-                sizeof(lines) / sizeof(lines[0]));
+  const char* texts[] = {
+      "Wi-Fi setup",
+      "1. Join network:",
+      config::kPortalApName,
+      "2. Open in browser:",
+      config::kPortalHostUrl,
+      "or 192.168.4.1",
+  };
+  constexpr size_t kCount = sizeof(texts) / sizeof(texts[0]);
+
+  tft.fillScreen(config::kColorYellow);
+  tft.setTextColor(config::kTextOnYellow, config::kColorYellow);
+  tft.setTextDatum(textdatum_t::middle_center);
+
+  int total_h = 0;
+  for (size_t i = 0; i < kCount; ++i) {
+    total_h += lineHeightGfx(fonts_line[i]);
+    if (i + 1 < kCount) {
+      total_h += kPortalGap;
+    }
+  }
+
+  int y = (config::kDisplayHeight - total_h) / 2;
+  for (size_t i = 0; i < kCount; ++i) {
+    displayFontSetBitmap(tft, fonts_line[i]);
+    const int h = tft.fontHeight();
+    tft.drawString(texts[i], kCenterX, y + h / 2);
+    y += h + kPortalGap;
+  }
+  tft.setTextDatum(textdatum_t::top_left);
+  tft.setTextSize(1);
 }
 
 void statusScreenConnectFailed() {
