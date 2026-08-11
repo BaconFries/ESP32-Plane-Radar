@@ -22,6 +22,7 @@ After Wi‑Fi is saved, the device reconnects automatically; the radar runs in t
 |--------|--------|
 | **Short tap** | Cycle range preset (5 → 10 → 15 → 25 km); saved to flash |
 | **Double tap** | Cycle screen mode: **auto** (live ADS-B + flip) → **clock** (stream paused) → **track** (stream paused; tracked callsign only) → auto |
+| **Triple tap** | Toggle **night theme** (dimmer colors) for testing; locks until reboot |
 | **Hold 3 s** | Clear Wi‑Fi, location, and units; reboot into setup portal |
 
 During setup you can also hold BOOT at power-on to force a credential reset (same as the long press).
@@ -40,7 +41,7 @@ During setup you can also hold BOOT at power-on to force a credential reset (sam
 2. The portal home lists **Live traffic** and **Track a flight** with full bookmarkable URLs, plus Setup / Wi‑Fi
 3. Change Wi‑Fi, location (ZIP or lat/lon), units, or runways under **Setup**; save
 4. Open **`http://plane-radar.local/traffic`** for callsign / type / altitude / track / ground speed from the current ADS-B snapshot (auto-refresh every 5 s)
-5. Open **`http://plane-radar.local/track`** to follow one callsign; the round display shows its status while it is airborne (and the local radar is empty)
+5. Open **`http://plane-radar.local/track`** to follow one callsign; optionally enter origin/destination (e.g. LGA / PBI) because public schedule DBs are often wrong for “today”. The round display shows status while airborne (and the local radar is empty)
 
 The same portal runs on the setup AP and on the device’s LAN IP while connected to Wi‑Fi. mDNS hostname is `plane-radar` → **plane-radar.local** (`kPortalHostname` in `config.h`). Some clients resolve `.local` slowly; use the IP if needed.
 
@@ -90,7 +91,7 @@ Preset, miles/km, and overlay toggles persist across reboot (`planeradar` NVS na
 - **Outside the ring** (still within ADS-B fetch) — small **red dot on the screen rim** at the correct bearing (direction cue; not distance-accurate past the ring)
 - **Tags** — placed toward the **center**: west (left) → tag on the **right** of the symbol; east (right) → tag on the **left**
 - **Idle** — if no aircraft are inside the outer ring, the display shows **local time**, date, and **current weather** (temp + short condition). Timezone comes from Open-Meteo for your radar center; °F when miles are enabled, otherwise °C. Weather refreshes about every 30 minutes.
-- **Tracked flight** — if you started a track on the portal and nothing is in the local ring, the display shows callsign, airline/route (when known), phase (Searching / Airborne / On ground / Lost), altitude, speed, and distance from your radar. Tracking auto-clears after landing (~10 min on ground) or after ~20+ min lost; you can also stop it on `/track`. If the tracked plane enters the local radar, it is drawn in yellow.
+- **Tracked flight** — if you started a track on the portal and nothing is in the local ring, **Auto** flips between the **clock** and the **track** screen (~20 s). Double-tap BOOT for a sticky clock or track view. Callsign HTTP runs **only while the track screen is visible**: every **15 min** while searching (no ADS-B yet), then every few seconds once the aircraft is seen. After landing, polls stop and the track clears after **2 hours**. Optional origin/destination on `/track` set the route (public schedule DBs are often wrong). If the tracked plane enters the local radar, it is drawn in yellow.
 
 As range decreases (or aircraft approach), targets move inward; beyond-ring dots become full symbols when they cross the outer ring. Rim-only traffic does **not** keep the radar awake — only in-ring aircraft do.
 
@@ -110,11 +111,11 @@ Edit **`include/config.h`** for hardware and behavior:
 | Portal | `kPortalApName`, `kPortalIp`, `kPortalHostname` / `kPortalHostUrl` (mDNS; needs `-DWM_MDNS` in `platformio.ini`) |
 | Wi‑Fi timing | connect attempts, reconnect grace, portal timeout (`0` = no timeout) |
 | BOOT | `kBootPin`, `kBootResetHoldMs`, `kBootTapMinMs` |
-| Display SPI | pins, `kDisplayInvert`, `kDisplayRgbOrder`, `kDisplaySpiWriteHz` |
+| Display SPI | pins, `kDisplayInvert`, `kDisplayRgbOrder`, `kDisplaySpiWriteHz`, night color scale (`kNightFgScale`) |
 | Default location | `kDefaultRadarLat`, `kDefaultRadarLon` (until portal overrides) |
 | ADS-B | `kAdsbFetchIntervalMs`, `kAdsbShowGroundAircraft` |
-| Idle / weather | `kIdleClockWhenEmpty`, `kWeatherRefreshMs` |
-| Flight track | `kFlightTrackPollMs`, `kFlightTrackLostMs`, `kFlightTrackLandedMs`, `kFlightTrackSearchMs` |
+| Idle / weather | `kIdleClockWhenEmpty`, `kWeatherRefreshMs`, `kAutoTrackFlipMs` |
+| Flight track | `kFlightTrackSearchPollMs` (15 min while searching), `kFlightTrackPollMs`, `kFlightTrackLostMs`, `kFlightTrackLandedMs` (2 h hold), `kFlightTrackSearchMs` |
 
 Range presets: `include/ui/radar_range.h` (`kRangePresets`).
 
@@ -168,6 +169,8 @@ src/
 | SDA (MOSI) | GPIO **3** |
 | SCL (SCLK) | GPIO **4** |
 | BOOT (user) | GPIO **9** |
+
+**Night dim:** After time sync, bright UI colors (clock green, labels, aircraft tags) are scaled down from **sunset→sunrise** (Open-Meteo; fallback 21:00–07:00). No backlight PWM — works with BLK tied to 3V3. Tune with `kNightFgScale` in `config.h`.
 
 ## Build
 

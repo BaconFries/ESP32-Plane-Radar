@@ -13,6 +13,7 @@
 #include "services/weather_client.h"
 #include "ui/radar_range.h"
 #include "ui/radar_theme.h"
+#include "ui/night_dim.h"
 
 namespace ui {
 namespace {
@@ -44,11 +45,12 @@ void useBitmap(const lgfx::GFXfont* font, uint8_t size = 1) {
 }
 
 void drawScreen(const struct tm& ti) {
-  const uint16_t bg = tft.color565(radar::kBgR, radar::kBgG, radar::kBgB);
+  const uint16_t bg =
+      ui::themeColor565(radar::kBgR, radar::kBgG, radar::kBgB, false);
   const uint16_t clock_green =
-      tft.color565(kClockGreenR, kClockGreenG, kClockGreenB);
-  const uint16_t date_fg = tft.color565(180, 230, 190);
-  const uint16_t weather_fg = tft.color565(230, 245, 255);
+      ui::themeColor565(kClockGreenR, kClockGreenG, kClockGreenB);
+  const uint16_t date_fg = ui::themeColor565(180, 230, 190);
+  const uint16_t weather_fg = ui::themeColor565(230, 245, 255);
 
   tft.fillScreen(bg);
   tft.setTextDatum(textdatum_t::middle_center);
@@ -112,9 +114,11 @@ void drawScreen(const struct tm& ti) {
 void idleClockDraw() {
   struct tm ti {};
   if (!getLocalTime(&ti, 50)) {
-    const uint16_t bg = tft.color565(radar::kBgR, radar::kBgG, radar::kBgB);
+    const uint16_t bg =
+        ui::themeColor565(radar::kBgR, radar::kBgG, radar::kBgB, false);
     tft.fillScreen(bg);
-    tft.setTextColor(tft.color565(kClockGreenR, kClockGreenG, kClockGreenB), bg);
+    tft.setTextColor(
+        ui::themeColor565(kClockGreenR, kClockGreenG, kClockGreenB), bg);
     tft.setTextDatum(textdatum_t::middle_center);
     displayFontSetBitmap(tft, &fonts::FreeSansBold18pt7b);
     tft.drawString("Syncing time…", radar::kCenterX, radar::kCenterY);

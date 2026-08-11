@@ -295,7 +295,12 @@ void handleTrackPage() {
       services::flight_track::clear();
     } else if (s_wm.server->hasArg("callsign")) {
       const String cs = s_wm.server->arg("callsign");
-      if (!services::flight_track::start(cs.c_str())) {
+      const String origin =
+          s_wm.server->hasArg("origin") ? s_wm.server->arg("origin") : "";
+      const String dest =
+          s_wm.server->hasArg("dest") ? s_wm.server->arg("dest") : "";
+      if (!services::flight_track::start(cs.c_str(), origin.c_str(),
+                                         dest.c_str())) {
         s_wm.server->send(400, "text/plain", "Invalid flight / callsign");
         return;
       }
@@ -309,7 +314,9 @@ void handleTrackPage() {
   html.reserve(4600);
   appendPortalPageChrome(html, "Track a flight", "/track");
   html += F("<p class='meta'>Enter a flight number (e.g. DL2460) or ADS-B callsign "
-            "(e.g. DAL2460). Status updates below without clearing this form. "
+            "(e.g. DAL2460). Optional origin/destination (LGA / PBI) set the route "
+            "shown on the display — schedule databases are often wrong for today. "
+            "Status updates below without clearing this form. "
             "On the device, double-tap BOOT until the track screen is shown "
             "(or leave Auto mode when the local radar is empty).</p>"
             "<div id='track-status'>");
@@ -320,6 +327,12 @@ void handleTrackPage() {
             "<label for='callsign'>Flight / callsign</label>"
             "<input id='callsign' name='callsign' type='text' maxlength='8' "
             "placeholder='DL2460' autocomplete='off' required>"
+            "<label for='origin'>Origin (optional)</label>"
+            "<input id='origin' name='origin' type='text' maxlength='4' "
+            "placeholder='LGA' autocomplete='off'>"
+            "<label for='dest'>Destination (optional)</label>"
+            "<input id='dest' name='dest' type='text' maxlength='4' "
+            "placeholder='PBI' autocomplete='off'>"
             "<button type='submit'>Start tracking</button>"
             "</form></div>"
             "<script>"

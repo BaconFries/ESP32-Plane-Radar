@@ -13,6 +13,7 @@
 #include <ctime>
 
 #include "config.h"
+#include "data/large_airports.h"
 #include "services/adsb_client.h"
 #include "services/wifi_setup.h"
 
@@ -22,8 +23,21 @@ namespace {
 
 constexpr char kPrefsNamespace[] = "flighttrk";
 constexpr char kKeyCallsign[] = "cs";
-constexpr char kCallsignApi[] = "https://opendata.adsb.fi/api/v2/callsign/";
+constexpr char kKeyOrigin[] = "orig";
+constexpr char kKeyDest[] = "dest";
+
+/** Live position by callsign (same JSON shape: { "ac": [ ... ] }). */
+constexpr const char* kLiveCallsignApis[] = {
+    "https://opendata.adsb.fi/api/v2/callsign/",
+    "https://api.airplanes.live/v2/callsign/",
+    "https://api.adsb.lol/v2/callsign/",
+};
+constexpr size_t kLiveApiCount =
+    sizeof(kLiveCallsignApis) / sizeof(kLiveCallsignApis[0]);
+
+/** Airline + ICAO callsign only — OD pairs from this DB are often stale. */
 constexpr char kRouteApi[] = "https://api.adsbdb.com/v0/callsign/";
+
 constexpr float kKmPerDeg = 111.0f;
 constexpr unsigned long kRequestTimeoutMs = 10000;
 
@@ -32,6 +46,23 @@ unsigned long s_started_ms = 0;
 unsigned long s_last_poll_ms = 0;
 unsigned long s_ground_since_ms = 0;
 bool s_was_airborne = false;
+/** After a completed landing: no more callsign HTTP until clear. */
+bool s_post_landing_idle = false;
+
+struct AirlineCode {
+  const char iata[3];
+  const char icao[4];
+};
+
+// Common IATA → ICAO airline prefixes for ADS-B callsign expansion.
+constexpr AirlineCode kAirlineCodes[] = {
+    {"AA", "AAL"}, {"AC", "ACA"}, {"AF", "AFR"}, {"AS", "ASA"}, {"B6", "JBU"},
+    {"BA", "BAW"}, {"DL", "DAL"}, {"EK", "UAE"}, {"F9", "FFT"}, {"FI", "ICE"},
+    {"G4", "AAY"}, {"HA", "HAL"}, {"IB", "IBE"}, {"KL", "KLM"}, {"LH", "DLH"},
+    {"LX", "SWR"}, {"NK", "NKS"}, {"QF", "QFA"}, {"QR", "QTR"}, {"SK", "SAS"},
+    {"SY", "SCX"}, {"TK", "THY"}, {"TP", "TAP"}, {"UA", "UAL"}, {"VS", "VIR"},
+    {"WN", "SWA"}, {"WS", "WJA"}, {"EI", "EIN"}, {"AY", "FIN"}, {"OS", "AUA"},
+};
 
 void setPhase(Phase p) {
   s_status.phase = p;
@@ -91,6 +122,7 @@ void noteBecameAirborne() {
   if (from_ground) {
     s_status.landing_label[0] = '\0';
     s_status.have_landing = false;
+    s_post_landing_idle = false;
   }
   s_was_airborne = true;
   setPhase(Phase::Airborne);
@@ -105,7 +137,9 @@ void noteBecameOnGround() {
     s_status.have_landing = (s_status.landing_label[0] != '\0');
     s_status.eta_label[0] = '\0';
     if (s_status.have_landing) {
-      Serial.printf("flight_track: landing %s\n", s_status.landing_label);
+      Serial.printf("flight_track: landing %s — stopping live polls\n",
+                    s_status.landing_label);
+      s_post_landing_idle = true;
     }
   }
   setPhase(Phase::OnGround);
@@ -136,15 +170,19 @@ void updateEta() {
   formatLocalFromOffsetSec(sec, s_status.eta_label, sizeof(s_status.eta_label));
 }
 
-void persistCallsign(const char* cs) {
+void persistTrack() {
   Preferences prefs;
   if (!prefs.begin(kPrefsNamespace, false)) {
     return;
   }
-  if (cs != nullptr && cs[0] != '\0') {
-    prefs.putString(kKeyCallsign, cs);
+  if (s_status.callsign[0] != '\0') {
+    prefs.putString(kKeyCallsign, s_status.callsign);
+    prefs.putString(kKeyOrigin, s_status.origin_iata);
+    prefs.putString(kKeyDest, s_status.dest_iata);
   } else {
     prefs.remove(kKeyCallsign);
+    prefs.remove(kKeyOrigin);
+    prefs.remove(kKeyDest);
   }
   prefs.end();
 }
@@ -173,12 +211,75 @@ void normalizeCallsign(const char* in, char* out, size_t out_len) {
   out[n] = '\0';
 }
 
+void normalizeAirportCode(const char* in, char* out, size_t out_len) {
+  normalizeCallsign(in, out, out_len);
+  // Keep at most 4 chars (ICAO); IATA is 3.
+  if (out_len > 5) {
+    out[4] = '\0';
+  }
+}
+
 bool callsignsEqual(const char* a, const char* b) {
   char na[9];
   char nb[9];
   normalizeCallsign(a, na, sizeof(na));
   normalizeCallsign(b, nb, sizeof(nb));
   return na[0] != '\0' && strcmp(na, nb) == 0;
+}
+
+/** DL2460 → DAL2460 when the id looks like IATA airline + flight number. */
+void expandAdsbCallsign(const char* display_cs, char* adsb_out, size_t out_len) {
+  normalizeCallsign(display_cs, adsb_out, out_len);
+  if (out_len < 5 || adsb_out[0] == '\0') {
+    return;
+  }
+  const size_t len = strlen(adsb_out);
+  // Already ICAO-style (three letters then a digit): keep as-is.
+  if (len >= 4 && adsb_out[0] >= 'A' && adsb_out[0] <= 'Z' &&
+      adsb_out[1] >= 'A' && adsb_out[1] <= 'Z' && adsb_out[2] >= 'A' &&
+      adsb_out[2] <= 'Z' && adsb_out[3] >= '0' && adsb_out[3] <= '9') {
+    return;
+  }
+  // IATA-style: two letters then a digit.
+  if (len < 3 || !(adsb_out[0] >= 'A' && adsb_out[0] <= 'Z') ||
+      !(adsb_out[1] >= 'A' && adsb_out[1] <= 'Z') ||
+      !(adsb_out[2] >= '0' && adsb_out[2] <= '9')) {
+    return;
+  }
+  for (const auto& row : kAirlineCodes) {
+    if (adsb_out[0] == row.iata[0] && adsb_out[1] == row.iata[1]) {
+      char expanded[12];
+      snprintf(expanded, sizeof(expanded), "%s%s", row.icao, adsb_out + 2);
+      strncpy(adsb_out, expanded, out_len - 1);
+      adsb_out[out_len - 1] = '\0';
+      return;
+    }
+  }
+}
+
+bool lookupAirportCoords(const char* code, float* lat, float* lon) {
+  if (code == nullptr || code[0] == '\0' || lat == nullptr || lon == nullptr) {
+    return false;
+  }
+  char icao[5] = "";
+  const size_t n = strlen(code);
+  if (n == 4) {
+    strncpy(icao, code, sizeof(icao) - 1);
+  } else if (n == 3) {
+    // US large airports: IATA XYZ → ICAO KXYZ (also try as-is for odd cases).
+    snprintf(icao, sizeof(icao), "K%s", code);
+  } else {
+    return false;
+  }
+
+  for (size_t i = 0; i < data::large_airports::kAirportCount; ++i) {
+    if (strcmp(data::large_airports::kAirports[i].ident, icao) == 0) {
+      *lat = data::large_airports::kAirports[i].lat_e7 / 1e7f;
+      *lon = data::large_airports::kAirports[i].lon_e7 / 1e7f;
+      return true;
+    }
+  }
+  return false;
 }
 
 void updateDistance(double center_lat, double center_lon) {
@@ -201,6 +302,40 @@ void buildRouteLine() {
   const char* o = s_status.origin_iata[0] ? s_status.origin_iata : "???";
   const char* d = s_status.dest_iata[0] ? s_status.dest_iata : "???";
   snprintf(s_status.route_line, sizeof(s_status.route_line), "%s > %s", o, d);
+}
+
+void applyAirports(const char* origin, const char* dest) {
+  char o[5] = "";
+  char d[5] = "";
+  normalizeAirportCode(origin, o, sizeof(o));
+  normalizeAirportCode(dest, d, sizeof(d));
+
+  if (o[0]) {
+    // Prefer showing IATA (3-letter) on the UI when we have Kxxx.
+    if (strlen(o) == 4 && o[0] == 'K') {
+      strncpy(s_status.origin_iata, o + 1, sizeof(s_status.origin_iata) - 1);
+    } else {
+      strncpy(s_status.origin_iata, o, sizeof(s_status.origin_iata) - 1);
+    }
+    s_status.origin_iata[sizeof(s_status.origin_iata) - 1] = '\0';
+  }
+  if (d[0]) {
+    if (strlen(d) == 4 && d[0] == 'K') {
+      strncpy(s_status.dest_iata, d + 1, sizeof(s_status.dest_iata) - 1);
+    } else {
+      strncpy(s_status.dest_iata, d, sizeof(s_status.dest_iata) - 1);
+    }
+    s_status.dest_iata[sizeof(s_status.dest_iata) - 1] = '\0';
+  }
+
+  float lat = 0.0f;
+  float lon = 0.0f;
+  if (d[0] && lookupAirportCoords(d, &lat, &lon)) {
+    s_status.dest_lat = lat;
+    s_status.dest_lon = lon;
+    s_status.has_dest = true;
+  }
+  buildRouteLine();
 }
 
 bool httpsGet(const char* url, String* payload) {
@@ -331,23 +466,34 @@ bool fetchLiveForId(const char* id) {
   if (id == nullptr || id[0] == '\0') {
     return false;
   }
-  char url[96];
-  snprintf(url, sizeof(url), "%s%s", kCallsignApi, id);
-  String payload;
-  if (!httpsGet(url, &payload)) {
-    return false;
+  for (size_t i = 0; i < kLiveApiCount; ++i) {
+    char url[112];
+    snprintf(url, sizeof(url), "%s%s", kLiveCallsignApis[i], id);
+    String payload;
+    if (!httpsGet(url, &payload)) {
+      if (i + 1 < kLiveApiCount) {
+        delay(400);
+      }
+      continue;
+    }
+    JsonDocument doc;
+    if (deserializeJson(doc, payload)) {
+      continue;
+    }
+    JsonArray ac = doc["ac"].as<JsonArray>();
+    if (ac.isNull() || ac.size() == 0) {
+      if (i + 1 < kLiveApiCount) {
+        delay(400);
+      }
+      continue;
+    }
+    JsonObject plane = ac[0];
+    applyLiveFromPlane(plane, planeOnGround(plane));
+    Serial.printf("flight_track: live hit via api[%u] %s\n",
+                  static_cast<unsigned>(i), id);
+    return true;
   }
-  JsonDocument doc;
-  if (deserializeJson(doc, payload)) {
-    return false;
-  }
-  JsonArray ac = doc["ac"].as<JsonArray>();
-  if (ac.isNull() || ac.size() == 0) {
-    return false;
-  }
-  JsonObject plane = ac[0];
-  applyLiveFromPlane(plane, planeOnGround(plane));
-  return true;
+  return false;
 }
 
 bool fetchLiveByCallsign() {
@@ -357,30 +503,33 @@ bool fetchLiveByCallsign() {
   if (s_status.adsb_callsign[0] != '\0' &&
       strcmp(s_status.adsb_callsign, s_status.callsign) != 0) {
     delay(1100);
-  }
-  if (strcmp(s_status.adsb_callsign, s_status.callsign) != 0) {
     return fetchLiveForId(s_status.callsign);
   }
   return false;
 }
 
-void fetchRouteOnce() {
+void fetchAirlineMetaOnce() {
   if (s_status.route_ok) {
     return;
   }
-  // Prefer looking up with the user-entered id (IATA flight # often works on adsbdb).
+  // Airline name + ICAO callsign only. Do NOT trust origin/destination —
+  // adsbdb maps callsigns to a static schedule that is often wrong for today.
   char url[96];
   snprintf(url, sizeof(url), "%s%s", kRouteApi, s_status.callsign);
   String payload;
   if (!httpsGet(url, &payload)) {
+    // Still allow live polling; mark ok so we don't hammer a dead endpoint.
+    s_status.route_ok = true;
     return;
   }
   JsonDocument doc;
   if (deserializeJson(doc, payload)) {
+    s_status.route_ok = true;
     return;
   }
   JsonObject route = doc["response"]["flightroute"];
   if (route.isNull()) {
+    s_status.route_ok = true;
     return;
   }
   if (route["airline"]["name"].is<const char*>()) {
@@ -388,24 +537,6 @@ void fetchRouteOnce() {
             sizeof(s_status.airline) - 1);
     s_status.airline[sizeof(s_status.airline) - 1] = '\0';
   }
-  if (route["origin"]["iata_code"].is<const char*>()) {
-    strncpy(s_status.origin_iata, route["origin"]["iata_code"].as<const char*>(),
-            sizeof(s_status.origin_iata) - 1);
-    s_status.origin_iata[sizeof(s_status.origin_iata) - 1] = '\0';
-  }
-  if (route["destination"]["iata_code"].is<const char*>()) {
-    strncpy(s_status.dest_iata,
-            route["destination"]["iata_code"].as<const char*>(),
-            sizeof(s_status.dest_iata) - 1);
-    s_status.dest_iata[sizeof(s_status.dest_iata) - 1] = '\0';
-  }
-  if (route["destination"]["latitude"].is<float>() &&
-      route["destination"]["longitude"].is<float>()) {
-    s_status.dest_lat = route["destination"]["latitude"].as<float>();
-    s_status.dest_lon = route["destination"]["longitude"].as<float>();
-    s_status.has_dest = true;
-  }
-  // ADS-B uses ICAO callsigns (DAL2460); keep the user's DL2460 for display.
   if (route["callsign_icao"].is<const char*>()) {
     char icao[9];
     normalizeCallsign(route["callsign_icao"].as<const char*>(), icao,
@@ -418,9 +549,8 @@ void fetchRouteOnce() {
     }
   }
   s_status.route_ok = true;
-  buildRouteLine();
-  Serial.printf("flight_track: route %s %s\n", s_status.callsign,
-                s_status.route_line);
+  Serial.printf("flight_track: airline meta %s (%s)\n", s_status.callsign,
+                s_status.airline[0] ? s_status.airline : "—");
 }
 
 void resetLiveFields() {
@@ -449,7 +579,7 @@ void maybeAutoEnd() {
   if (s_was_airborne && s_status.phase == Phase::OnGround &&
       s_ground_since_ms != 0 &&
       (now - s_ground_since_ms) >= config::kFlightTrackLandedMs) {
-    Serial.println("flight_track: landed — clearing");
+    Serial.println("flight_track: landed hold done — clearing");
     clear();
     return;
   }
@@ -488,6 +618,8 @@ void init() {
     return;
   }
   const String cs = prefs.getString(kKeyCallsign, "");
+  const String orig = prefs.getString(kKeyOrigin, "");
+  const String dest = prefs.getString(kKeyDest, "");
   prefs.end();
   if (cs.length() == 0) {
     return;
@@ -499,15 +631,21 @@ void init() {
   }
   strncpy(s_status.callsign, norm, sizeof(s_status.callsign) - 1);
   s_status.callsign[sizeof(s_status.callsign) - 1] = '\0';
-  strncpy(s_status.adsb_callsign, norm, sizeof(s_status.adsb_callsign) - 1);
-  s_status.adsb_callsign[sizeof(s_status.adsb_callsign) - 1] = '\0';
+  expandAdsbCallsign(s_status.callsign, s_status.adsb_callsign,
+                     sizeof(s_status.adsb_callsign));
   s_status.active = true;
+  s_status.route_ok = false;
   s_started_ms = millis();
   s_was_airborne = false;
   s_ground_since_ms = 0;
+  s_post_landing_idle = false;
   resetLiveFields();
+  if (orig.length() || dest.length()) {
+    applyAirports(orig.c_str(), dest.c_str());
+  }
   setPhase(Phase::Searching);
-  Serial.printf("flight_track: restored %s\n", s_status.callsign);
+  Serial.printf("flight_track: restored %s (adsb %s) %s\n", s_status.callsign,
+                s_status.adsb_callsign, s_status.route_line);
 }
 
 const Status& status() { return s_status; }
@@ -520,7 +658,8 @@ const char* adsbCallsign() {
   return s_status.adsb_callsign[0] ? s_status.adsb_callsign : s_status.callsign;
 }
 
-bool start(const char* flight_or_callsign) {
+bool start(const char* flight_or_callsign, const char* origin,
+           const char* dest) {
   char norm[9];
   normalizeCallsign(flight_or_callsign, norm, sizeof(norm));
   if (norm[0] == '\0' || strlen(norm) < 2) {
@@ -529,25 +668,29 @@ bool start(const char* flight_or_callsign) {
   clear();
   strncpy(s_status.callsign, norm, sizeof(s_status.callsign) - 1);
   s_status.callsign[sizeof(s_status.callsign) - 1] = '\0';
-  strncpy(s_status.adsb_callsign, norm, sizeof(s_status.adsb_callsign) - 1);
-  s_status.adsb_callsign[sizeof(s_status.adsb_callsign) - 1] = '\0';
+  expandAdsbCallsign(s_status.callsign, s_status.adsb_callsign,
+                     sizeof(s_status.adsb_callsign));
   s_status.active = true;
   s_status.route_ok = false;
   s_status.airline[0] = '\0';
   s_status.origin_iata[0] = '\0';
   s_status.dest_iata[0] = '\0';
   s_status.route_line[0] = '\0';
+  s_status.has_dest = false;
   s_started_ms = millis();
   s_last_poll_ms = 0;
   s_was_airborne = false;
   s_ground_since_ms = 0;
+  s_post_landing_idle = false;
   resetLiveFields();
   setPhase(Phase::Searching);
-  persistCallsign(s_status.callsign);
-  Serial.printf("flight_track: tracking %s\n", s_status.callsign);
-  if (WiFi.status() == WL_CONNECTED) {
-    fetchRouteOnce();
+  if ((origin && origin[0]) || (dest && dest[0])) {
+    applyAirports(origin, dest);
   }
+  persistTrack();
+  Serial.printf("flight_track: tracking %s (adsb %s) %s\n", s_status.callsign,
+                s_status.adsb_callsign,
+                s_status.route_line[0] ? s_status.route_line : "(no route)");
   return true;
 }
 
@@ -558,33 +701,58 @@ void clear() {
   s_last_poll_ms = 0;
   s_ground_since_ms = 0;
   s_was_airborne = false;
-  persistCallsign("");
+  s_post_landing_idle = false;
+  persistTrack();
   Serial.println("flight_track: cleared");
 }
 
-void pollUpdate(double center_lat, double center_lon) {
+bool isPostLandingIdle() {
+  return s_status.active && s_post_landing_idle;
+}
+
+void pollUpdate(double center_lat, double center_lon, bool allow_network) {
   if (!s_status.active || WiFi.status() != WL_CONNECTED) {
     return;
   }
 
   const unsigned long now = millis();
-  if (s_last_poll_ms != 0 &&
-      (now - s_last_poll_ms) < config::kFlightTrackPollMs) {
+
+  // Cheap: refresh from the local area ADS-B snapshot when present (no HTTP).
+  if (!s_post_landing_idle && matchLocalAircraft()) {
+    updateDistance(center_lat, center_lon);
+    updateEta();
+    maybeAutoEnd();
+    return;
+  }
+
+  // Post-landing: keep final Out/In on screen; no more HTTP until auto-clear.
+  if (s_post_landing_idle) {
+    updateDistance(center_lat, center_lon);
+    maybeAutoEnd();
+    return;
+  }
+
+  if (!allow_network) {
+    maybeAutoEnd();
+    return;
+  }
+
+  const unsigned long interval =
+      (!s_was_airborne && s_status.phase == Phase::Searching)
+          ? config::kFlightTrackSearchPollMs
+          : config::kFlightTrackPollMs;
+  if (s_last_poll_ms != 0 && (now - s_last_poll_ms) < interval) {
     maybeAutoEnd();
     return;
   }
   s_last_poll_ms = now;
 
   if (!s_status.route_ok) {
-    fetchRouteOnce();
-    delay(1100);  // stay under adsb.fi 1 req/s when followed by callsign GET
+    fetchAirlineMetaOnce();
+    delay(1100);
   }
 
-  bool found = matchLocalAircraft();
-  if (!found) {
-    found = fetchLiveByCallsign();
-  }
-
+  const bool found = fetchLiveByCallsign();
   if (!found) {
     if (s_was_airborne && s_status.last_seen_ms != 0 &&
         (now - s_status.last_seen_ms) >= config::kFlightTrackLostMs) {

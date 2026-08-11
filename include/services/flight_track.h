@@ -62,19 +62,26 @@ const char* adsbCallsign();
 
 /**
  * Start tracking a flight number / ADS-B callsign (e.g. UAL123 or UA123).
- * Fetches route metadata when possible. Returns false if callsign invalid.
+ * Optional origin/dest IATA or ICAO (e.g. LGA/PBI or KLGA/KPBI) override the
+ * often-wrong static schedule databases for display + ETA.
+ * Returns false if callsign invalid.
  */
-bool start(const char* flight_or_callsign);
+bool start(const char* flight_or_callsign, const char* origin = nullptr,
+           const char* dest = nullptr);
 
 /** Stop tracking and clear NVS. */
 void clear();
 
 /**
- * Refresh live position: match local ADS-B list first, else adsb.fi callsign API.
- * Respects rate limits; call from the main loop on a timer.
- * May auto-clear when the flight appears ended.
+ * Refresh tracked flight. Local ADS-B list match is always attempted (no extra
+ * HTTP). Network callsign polls run only when allow_network is true (track
+ * screen visible). Searching uses a slow interval; post-landing stops HTTP.
+ * May auto-clear when the flight ends / times out.
  */
-void pollUpdate(double center_lat, double center_lon);
+void pollUpdate(double center_lat, double center_lon, bool allow_network);
+
+/** True after takeoff→landing until auto-clear (display final status, no API). */
+bool isPostLandingIdle();
 
 /** Short label for Phase (for UI). */
 const char* phaseLabel(Phase phase);

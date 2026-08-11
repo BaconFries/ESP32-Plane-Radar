@@ -15,6 +15,7 @@
 #include "ui/radar_range.h"
 #include "ui/radar_theme.h"
 #include "ui/runway_overlay.h"
+#include "ui/night_dim.h"
 
 namespace ui {
 namespace radar {
@@ -174,28 +175,30 @@ void initTagLabelMetrics() {
 }
 
 void initPalette() {
-  radar::kColorBackground = tft.color565(radar::kBgR, radar::kBgG, radar::kBgB);
-  radar::kColorGrid = tft.color565(radar::kGridR, radar::kGridG, radar::kGridB);
-  radar::kColorLabel = tft.color565(255, 255, 255);
-  radar::kColorCenter = tft.color565(255, 255, 255);
+  radar::kColorBackground =
+      ui::themeColor565(radar::kBgR, radar::kBgG, radar::kBgB, false);
+  radar::kColorGrid =
+      ui::themeColor565(radar::kGridR, radar::kGridG, radar::kGridB);
+  radar::kColorLabel = ui::themeColor565(255, 255, 255);
+  radar::kColorCenter = ui::themeColor565(255, 255, 255);
   // GC9A01 BGR panel: swap R/B in color565 so logical red renders red on screen.
   if (config::kDisplayRgbOrder) {
-    radar::kColorAircraft =
-        tft.color565(radar::kAircraftB, radar::kAircraftG, radar::kAircraftR);
+    radar::kColorAircraft = ui::themeColor565(
+        radar::kAircraftB, radar::kAircraftG, radar::kAircraftR);
   } else {
-    radar::kColorAircraft =
-        tft.color565(radar::kAircraftR, radar::kAircraftG, radar::kAircraftB);
+    radar::kColorAircraft = ui::themeColor565(
+        radar::kAircraftR, radar::kAircraftG, radar::kAircraftB);
   }
   radar::kColorTrackVector =
-      tft.color565(radar::kTrackR, radar::kTrackG, radar::kTrackB);
+      ui::themeColor565(radar::kTrackR, radar::kTrackG, radar::kTrackB);
   radar::kColorTagType =
-      tft.color565(radar::kTagTypeR, radar::kTagTypeG, radar::kTagTypeB);
+      ui::themeColor565(radar::kTagTypeR, radar::kTagTypeG, radar::kTagTypeB);
   radar::kColorTagAltitude =
-      tft.color565(radar::kTagAltR, radar::kTagAltG, radar::kTagAltB);
+      ui::themeColor565(radar::kTagAltR, radar::kTagAltG, radar::kTagAltB);
   radar::kColorRunway =
-      tft.color565(radar::kRunwayR, radar::kRunwayG, radar::kRunwayB);
-  radar::kColorRunwayLabel = tft.color565(radar::kRunwayLabelR, radar::kRunwayLabelG,
-                                          radar::kRunwayLabelB);
+      ui::themeColor565(radar::kRunwayR, radar::kRunwayG, radar::kRunwayB);
+  radar::kColorRunwayLabel = ui::themeColor565(
+      radar::kRunwayLabelR, radar::kRunwayLabelG, radar::kRunwayLabelB);
 }
 
 constexpr float kKmPerDeg = 111.0f;

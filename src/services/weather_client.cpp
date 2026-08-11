@@ -16,6 +16,28 @@ namespace {
 
 Conditions s_current{};
 
+/** Parse Open-Meteo ISO local time "2026-08-10T06:42" → minutes from midnight. */
+bool parseIsoLocalToMinutes(const char* iso, int* out_min) {
+  if (iso == nullptr || out_min == nullptr) {
+    return false;
+  }
+  int hour = 0;
+  int minute = 0;
+  // Accept "...THH:MM" or "...THH:MM:SS"
+  const char* t = strchr(iso, 'T');
+  if (t == nullptr) {
+    return false;
+  }
+  if (sscanf(t + 1, "%d:%d", &hour, &minute) < 2) {
+    return false;
+  }
+  if (hour < 0 || hour > 23 || minute < 0 || minute > 59) {
+    return false;
+  }
+  *out_min = hour * 60 + minute;
+  return true;
+}
+
 }  // namespace
 
 const char* summaryForCode(int weather_code) {
@@ -55,15 +77,25 @@ bool needsRefresh(unsigned long interval_ms) {
   return (millis() - s_current.fetched_ms) >= interval_ms;
 }
 
+bool solarTimes(int& sunrise_min, int& sunset_min) {
+  if (s_current.sunrise_min < 0 || s_current.sunset_min < 0) {
+    return false;
+  }
+  sunrise_min = s_current.sunrise_min;
+  sunset_min = s_current.sunset_min;
+  return true;
+}
+
 bool fetchUpdate(double lat, double lon) {
   if (WiFi.status() != WL_CONNECTED) {
     return false;
   }
 
-  char url[192];
+  char url[256];
   snprintf(url, sizeof(url),
            "http://api.open-meteo.com/v1/forecast?latitude=%.4f&longitude=%.4f"
-           "&current=temperature_2m,weather_code&timezone=auto",
+           "&current=temperature_2m,weather_code"
+           "&daily=sunrise,sunset&forecast_days=1&timezone=auto",
            lat, lon);
 
   HTTPClient http;
@@ -106,10 +138,36 @@ bool fetchUpdate(double lat, double lon) {
   s_current.fetched_ms = millis();
   s_current.valid = true;
 
+  s_current.sunrise_min = -1;
+  s_current.sunset_min = -1;
+  JsonObject daily = doc["daily"];
+  if (!daily.isNull()) {
+    JsonArray sunrise_arr = daily["sunrise"].as<JsonArray>();
+    JsonArray sunset_arr = daily["sunset"].as<JsonArray>();
+    if (!sunrise_arr.isNull() && !sunset_arr.isNull() &&
+        sunrise_arr.size() > 0 && sunset_arr.size() > 0) {
+      const char* sr = sunrise_arr[0].as<const char*>();
+      const char* ss = sunset_arr[0].as<const char*>();
+      int srm = -1;
+      int ssm = -1;
+      if (parseIsoLocalToMinutes(sr, &srm) &&
+          parseIsoLocalToMinutes(ss, &ssm)) {
+        s_current.sunrise_min = srm;
+        s_current.sunset_min = ssm;
+      }
+    }
+  }
+
   time_sync::setUtcOffsetSeconds(s_current.utc_offset_sec);
 
-  Serial.printf("weather: %.1f C, %s (code %d)\n", s_current.temp_c,
+  Serial.printf("weather: %.1f C, %s (code %d)", s_current.temp_c,
                 s_current.summary, s_current.weather_code);
+  if (s_current.sunrise_min >= 0) {
+    Serial.printf(", sun %02d:%02d–%02d:%02d", s_current.sunrise_min / 60,
+                  s_current.sunrise_min % 60, s_current.sunset_min / 60,
+                  s_current.sunset_min % 60);
+  }
+  Serial.println();
   return true;
 }
 

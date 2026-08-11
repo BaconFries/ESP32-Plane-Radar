@@ -12,6 +12,7 @@
 #include "services/flight_track.h"
 #include "ui/radar_range.h"
 #include "ui/radar_theme.h"
+#include "ui/night_dim.h"
 
 namespace ui {
 namespace {
@@ -64,12 +65,13 @@ void formatStatusLine(const services::flight_track::Status& st, char* out,
 
 void drawScreen() {
   const auto& st = services::flight_track::status();
-  const uint16_t bg = tft.color565(radar::kBgR, radar::kBgG, radar::kBgB);
-  const uint16_t fg = tft.color565(255, 255, 255);
-  const uint16_t muted = tft.color565(160, 185, 200);
-  const uint16_t accent = tft.color565(255, 200, 80);
-  const uint16_t ok = tft.color565(80, 220, 140);
-  const uint16_t green = tft.color565(kGreenR, kGreenG, kGreenB);
+  const uint16_t bg =
+      ui::themeColor565(radar::kBgR, radar::kBgG, radar::kBgB, false);
+  const uint16_t fg = ui::themeColor565(255, 255, 255);
+  const uint16_t muted = ui::themeColor565(160, 185, 200);
+  const uint16_t accent = ui::themeColor565(255, 200, 80);
+  const uint16_t ok = ui::themeColor565(80, 220, 140);
+  const uint16_t green = ui::themeColor565(kGreenR, kGreenG, kGreenB);
 
   tft.fillScreen(bg);
   tft.setTextDatum(textdatum_t::middle_center);
@@ -108,7 +110,7 @@ void drawScreen() {
   if (st.phase == services::flight_track::Phase::Airborne) {
     phase_color = ok;
   } else if (st.phase == services::flight_track::Phase::Lost) {
-    phase_color = tft.color565(255, 90, 90);
+    phase_color = ui::themeColor565(255, 90, 90);
   } else if (st.phase == services::flight_track::Phase::OnGround) {
     phase_color = accent;
   }

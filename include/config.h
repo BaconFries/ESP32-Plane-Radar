@@ -30,6 +30,8 @@ constexpr unsigned long kBootResetHoldMs = 3000UL;
 constexpr unsigned long kBootTapMinMs = 40UL;
 /** Second tap within this window counts as a double-tap (screen cycle). */
 constexpr unsigned long kBootDoubleTapMs = 550UL;
+/** Wait this long after the last tap before committing 1 / 2 / 3+ tap actions. */
+constexpr unsigned long kBootMultiTapMs = 550UL;
 
 // --- Display: GC9A01 1.28" round 240×240 (SPI) ---
 constexpr gpio_num_t kDisplayPinRst = GPIO_NUM_0;
@@ -46,6 +48,20 @@ constexpr uint32_t kDisplaySpiWriteHz = 40000000;
 constexpr bool kDisplayInvert = true;
 constexpr bool kDisplayRgbOrder = true;
 
+/**
+ * Night UI: scale bright RGB channels (no backlight PWM — BLK often tied to 3V3).
+ * 255 = full day colors; ~90 ≈ 35% for a softer night look.
+ */
+constexpr uint8_t kNightFgScale = 90;
+/** How often to re-evaluate day/night (sun times / clock). */
+constexpr unsigned long kNightDimCheckMs = 30UL * 1000UL;
+/**
+ * If sunrise/sunset unknown: treat as night from this local hour (inclusive)
+ * until kNightEndHour (exclusive).
+ */
+constexpr int kNightStartHour = 21;
+constexpr int kNightEndHour = 7;
+
 // --- Radar center defaults (overridden via WiFi setup portal) ---
 constexpr double kDefaultRadarLat = 52.3676;
 constexpr double kDefaultRadarLon = 4.9041;
@@ -61,13 +77,20 @@ constexpr bool kAdsbShowGroundAircraft = false;
 constexpr unsigned long kWeatherRefreshMs = 30UL * 60UL * 1000UL;
 /** Show clock/weather when no aircraft inside the outer ring. */
 constexpr bool kIdleClockWhenEmpty = true;
+/** In Auto with an active track and empty radar: flip clock ↔ track this often. */
+constexpr unsigned long kAutoTrackFlipMs = 20UL * 1000UL;
 
-/** Portal-tracked flight: poll live position (adsb.fi callsign). */
+/**
+ * Portal-tracked flight polling (only while the track screen is visible).
+ * Searching (no ADS-B yet): slow callsign poll.
+ * Airborne / seen: faster ADS-B callsign poll.
+ */
+constexpr unsigned long kFlightTrackSearchPollMs = 15UL * 60UL * 1000UL;
 constexpr unsigned long kFlightTrackPollMs = 5000;
 /** Clear track after this long with no ADS-B hit (was seen before). */
 constexpr unsigned long kFlightTrackLostMs = 20UL * 60UL * 1000UL;
-/** Clear after sitting on ground this long (post-airborne). */
-constexpr unsigned long kFlightTrackLandedMs = 10UL * 60UL * 1000UL;
+/** After landing: keep final status this long, then clear (no API after touchdown). */
+constexpr unsigned long kFlightTrackLandedMs = 2UL * 60UL * 60UL * 1000UL;
 /** Give up searching if never seen. */
 constexpr unsigned long kFlightTrackSearchMs = 6UL * 60UL * 60UL * 1000UL;
 
