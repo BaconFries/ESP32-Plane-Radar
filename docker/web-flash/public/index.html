@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Plane Radar — Update firmware</title>
+    <link rel="stylesheet" href="styles.css" />
+    <script
+      type="module"
+      src="https://unpkg.com/esp-web-tools@10.1.1/dist/web/install-button.js?module"
+    ></script>
+  </head>
+  <body>
+    <main class="wrap">
+      <header class="brand">
+        <p class="eyebrow">Firmware update</p>
+        <h1>Plane Radar</h1>
+        <p class="lede">
+          Update the device from this page over USB. No apps to install — use
+          Chrome or Edge.
+        </p>
+        <p class="version" id="versionLabel">Loading version…</p>
+      </header>
+
+      <ol class="steps">
+        <li>
+          <strong>Use the right browser</strong>
+          <span>Chrome or Edge on a computer, or Chrome on Android. Safari and iPhone are not supported.</span>
+        </li>
+        <li>
+          <strong>Plug in the radar</strong>
+          <span>Use a USB-C cable that can carry data (not charge-only).</span>
+        </li>
+        <li>
+          <strong>Put it in update mode</strong>
+          <span>Hold the <kbd>BOOT</kbd> button, tap <kbd>RESET</kbd>, then let go of <kbd>BOOT</kbd>.</span>
+        </li>
+        <li>
+          <strong>Install</strong>
+          <span>Click the button below, pick the USB device when asked, and wait until it finishes.</span>
+        </li>
+      </ol>
+
+      <div class="install">
+        <esp-web-install-button id="installBtn" manifest="./manifest.json">
+          <button slot="activate" class="btn" type="button">
+            Install Plane Radar
+          </button>
+          <span slot="unsupported" class="warn">
+            Web Serial is not available in this browser. Open this page in
+            Chrome or Edge, or
+            <a href="./firmware/plane-radar.bin" download>download the firmware file</a>
+            and flash with
+            <a href="https://espressif.github.io/esptool-js/" rel="noopener" target="_blank">esptool-js</a>
+            at address <code>0x0</code>.
+          </span>
+          <span slot="not-allowed" class="warn">
+            This page must be opened over HTTPS (or localhost) for USB install
+            to work.
+          </span>
+        </esp-web-install-button>
+        <p class="fallback">
+          Prefer a manual flash?
+          <a href="./firmware/plane-radar.bin" download>Download plane-radar.bin</a>
+          · flash at <code>0x0</code> · chip <strong>ESP32-C3</strong>
+        </p>
+      </div>
+
+      <section class="after">
+        <h2>After it finishes</h2>
+        <ul>
+          <li>Unplug and plug the device back in (or tap <kbd>RESET</kbd>).</li>
+          <li>It should reconnect to your Wi‑Fi on its own.</li>
+          <li>
+            If the map looks wrong, open
+            <a href="http://plane-radar.local/">http://plane-radar.local</a>
+            and check <strong>Setup</strong> (location / ZIP).
+          </li>
+        </ul>
+      </section>
+    </main>
+    <script src="app.js"></script>
+  </body>
+</html>

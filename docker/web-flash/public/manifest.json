@@ -1,0 +1,16 @@
+{
+  "name": "Plane Radar",
+  "version": "dev",
+  "new_install_prompt_erase": false,
+  "builds": [
+    {
+      "chipFamily": "ESP32-C3",
+      "parts": [
+        {
+          "path": "firmware/plane-radar.bin",
+          "offset": 0
+        }
+      ]
+    }
+  ]
+}

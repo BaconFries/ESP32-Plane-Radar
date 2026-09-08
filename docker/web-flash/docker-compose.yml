@@ -1,0 +1,11 @@
+services:
+  flash:
+    build: .
+    container_name: plane-radar-flash
+    ports:
+      # Lab NAS uses 8098 (8088 is nagios in HAProxy). Override as needed.
+      - "8098:80"
+    volumes:
+      # Drop a new plane-radar.bin here without rebuilding the image.
+      - ./public/firmware:/usr/share/nginx/html/firmware:ro
+    restart: unless-stopped

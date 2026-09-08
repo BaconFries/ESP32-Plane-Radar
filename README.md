@@ -245,6 +245,12 @@ git push origin v1.0.0
 
 The release workflow builds firmware in CI and attaches the merged image to the release. Download from **Releases** on GitHub, then flash at **0x0** (ESP32-C3, 4 MB).
 
+### Guided web installer (Docker + HAProxy)
+
+For remote / non-technical users, see [`docker/web-flash/README.md`](docker/web-flash/README.md).
+
+**This lab:** Synology Container Manager import lives on the NAS share at `/docker/planetracker_updater/` (`planetracker-updater-1.json`, host port **8098**). HAProxy on `plex` routes `https://planeradar.sysops.me/` → `192.168.1.14:8098`.
+
 ## Dependencies
 
 - [LovyanGFX](https://github.com/lovyan03/LovyanGFX)
