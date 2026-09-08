@@ -5,9 +5,11 @@
 
 #include <ArduinoJson.h>
 
+#include <cmath>
 #include <cstring>
 
 #include "config.h"
+#include "services/wifi_setup.h"
 
 namespace services::adsb {
 
@@ -15,74 +17,22 @@ namespace {
 
 constexpr char kApiBase[] = "https://opendata.adsb.fi/api/v3/lat/";
 constexpr float kKmPerNm = 1.852f;
-constexpr int kConnectAttemptMs = 200;
-constexpr unsigned long kRequestTimeoutMs = 10000;
+/** TLS handshake often exceeds a few hundred ms on ESP32-C3. */
+constexpr int kConnectTimeoutMs = 8000;
+constexpr unsigned long kRequestTimeoutMs = 12000;
 
 Aircraft s_aircraft[kMaxAircraft];
 size_t s_aircraft_count = 0;
 PollFn s_poll_fn = nullptr;
 
-void pollNetwork() {
+void pollLight() {
+  // Keep the BOOT long-press responsive, but do NOT run WiFiManager's web
+  // server while this TLS socket is active — process() can corrupt the read.
+  bootButtonPollLongPress();
   if (s_poll_fn != nullptr) {
     s_poll_fn();
   }
-}
-
-int performGetWithPoll(HTTPClient& http) {
-  http.setConnectTimeout(kConnectAttemptMs);
-  const unsigned long deadline = millis() + kRequestTimeoutMs;
-  while (millis() < deadline) {
-    pollNetwork();
-    const int code = http.GET();
-    if (code > 0) {
-      return code;
-    }
-    if (code != HTTPC_ERROR_CONNECTION_REFUSED &&
-        code != HTTPC_ERROR_NOT_CONNECTED) {
-      return code;
-    }
-    delay(5);
-  }
-  return HTTPC_ERROR_READ_TIMEOUT;
-}
-
-bool readResponseBodyWithPoll(HTTPClient& http, String& payload) {
-  WiFiClient* stream = http.getStreamPtr();
-  if (stream == nullptr) {
-    return false;
-  }
-
-  const int content_length = http.getSize();
-  if (content_length > 0) {
-    payload.reserve(static_cast<unsigned>(content_length + 1));
-  }
-
-  uint8_t buffer[512];
-  const unsigned long deadline = millis() + kRequestTimeoutMs;
-  while (millis() < deadline) {
-    pollNetwork();
-    const int available = stream->available();
-    if (available > 0) {
-      const int to_read =
-          available > static_cast<int>(sizeof(buffer)) ? static_cast<int>(sizeof(buffer))
-                                                       : available;
-      const int read_bytes = stream->readBytes(buffer, to_read);
-      if (read_bytes > 0) {
-        payload.concat(reinterpret_cast<const char*>(buffer),
-                       static_cast<unsigned>(read_bytes));
-      }
-    }
-    if (content_length > 0 &&
-        static_cast<int>(payload.length()) >= content_length) {
-      break;
-    }
-    if (!http.connected() && stream->available() <= 0) {
-      break;
-    }
-    delay(1);
-  }
-
-  return payload.length() > 0;
+  yield();
 }
 
 float kmToNauticalMiles(float km) { return km / kKmPerNm; }
@@ -93,6 +43,12 @@ bool readJsonFloat(const JsonObject& obj, const char* key, float* out) {
     return true;
   }
   return false;
+}
+
+bool hasLatLon(const JsonObject& plane) {
+  float lat = 0.0f;
+  float lon = 0.0f;
+  return readJsonFloat(plane, "lat", &lat) && readJsonFloat(plane, "lon", &lon);
 }
 
 float pickNoseHeading(const JsonObject& plane) {
@@ -197,6 +153,26 @@ void fillTagFields(Aircraft* ac, const JsonObject& plane) {
   formatAltitudeTag(plane, ac->alt, sizeof(ac->alt));
 }
 
+/** Keep only fields we need (ArduinoJson filter docs: list keys under ac[0]). */
+void buildAcFilter(JsonDocument& filter) {
+  filter["total"] = true;
+  filter["msg"] = true;
+  filter["ac"][0]["lat"] = true;
+  filter["ac"][0]["lon"] = true;
+  filter["ac"][0]["flight"] = true;
+  filter["ac"][0]["hex"] = true;
+  filter["ac"][0]["t"] = true;
+  filter["ac"][0]["alt_baro"] = true;
+  filter["ac"][0]["alt_geom"] = true;
+  filter["ac"][0]["gs"] = true;
+  filter["ac"][0]["tas"] = true;
+  filter["ac"][0]["ias"] = true;
+  filter["ac"][0]["track"] = true;
+  filter["ac"][0]["true_heading"] = true;
+  filter["ac"][0]["mag_heading"] = true;
+  filter["ac"][0]["dir"] = true;
+}
+
 }  // namespace
 
 void setPollFn(PollFn fn) { s_poll_fn = fn; }
@@ -208,64 +184,83 @@ const Aircraft* aircraftList() { return s_aircraft; }
 bool fetchUpdate(double center_lat, double center_lon, float fetch_radius_km) {
   const float dist_nm = kmToNauticalMiles(fetch_radius_km);
 
-  String url = kApiBase;
-  url += String(center_lat, 6);
-  url += "/lon/";
-  url += String(center_lon, 6);
-  url += "/dist/";
-  url += String(dist_nm, 1);
+  char url[128];
+  snprintf(url, sizeof(url), "%s%.5f/lon/%.5f/dist/%.1f", kApiBase, center_lat,
+           center_lon, dist_nm);
 
-  Serial.printf("adsb: HTTPS (free heap %u, maxAlloc %u)\n",
-                static_cast<unsigned>(ESP.getFreeHeap()),
-                static_cast<unsigned>(ESP.getMaxAllocHeap()));
+  Serial.printf("adsb: query %.5f,%.5f  %.1f nm  (heap %u)\n", center_lat,
+                center_lon, dist_nm, static_cast<unsigned>(ESP.getFreeHeap()));
 
   WiFiClientSecure client;
   client.setInsecure();
+  client.setTimeout(kRequestTimeoutMs / 1000);
 
   HTTPClient http;
+  http.setConnectTimeout(kConnectTimeoutMs);
+  http.setTimeout(kRequestTimeoutMs);
+  http.setReuse(false);
   if (!http.begin(client, url)) {
     Serial.println("adsb: http.begin failed");
     return false;
   }
+  http.addHeader("Accept", "application/json");
+  http.addHeader("Connection", "close");
 
-  http.setTimeout(kRequestTimeoutMs);
-  const int code = performGetWithPoll(http);
+  pollLight();
+  const int code = http.GET();
   if (code != HTTP_CODE_OK) {
     Serial.printf("adsb: HTTP %d\n", code);
     http.end();
     return false;
   }
 
-  String payload;
-  if (!readResponseBodyWithPoll(http, payload)) {
+  // Buffer the body first. Streaming + Filter on WiFiClientSecure was returning
+  // Ok with an empty ac[] even when the API had traffic.
+  String payload = http.getString();
+  http.end();
+  if (payload.length() == 0) {
     Serial.println("adsb: empty response");
-    http.end();
     return false;
   }
-  http.end();
+
+  JsonDocument filter;
+  buildAcFilter(filter);
 
   JsonDocument doc;
-  const DeserializationError err = deserializeJson(doc, payload);
+  DeserializationError err =
+      deserializeJson(doc, payload, DeserializationOption::Filter(filter));
   if (err) {
-    Serial.printf("adsb: JSON parse error: %s\n", err.c_str());
+    Serial.printf("adsb: JSON parse error: %s (bytes %u, head \"%.40s\")\n",
+                  err.c_str(), static_cast<unsigned>(payload.length()),
+                  payload.c_str());
     return false;
   }
 
+  const int api_total = doc["total"] | -1;
+  const char* api_msg = doc["msg"] | "";
   JsonArray ac = doc["ac"].as<JsonArray>();
-  if (ac.isNull()) {
+  const size_t api_ac = ac.isNull() ? 0 : ac.size();
+
+  if (api_ac == 0) {
     s_aircraft_count = 0;
+    Serial.printf("adsb: 0 aircraft (api total=%d msg=\"%s\" bytes=%u)\n",
+                  api_total, api_msg, static_cast<unsigned>(payload.length()));
     return true;
   }
 
   size_t n = 0;
+  size_t skipped_ground = 0;
+  size_t skipped_nopos = 0;
   for (JsonObject plane : ac) {
     if (n >= kMaxAircraft) {
       break;
     }
-    if (!plane["lat"].is<float>() || !plane["lon"].is<float>()) {
+    if (!hasLatLon(plane)) {
+      ++skipped_nopos;
       continue;
     }
     if (isOnGround(plane) && !config::kAdsbShowGroundAircraft) {
+      ++skipped_ground;
       continue;
     }
 
@@ -279,7 +274,10 @@ bool fetchUpdate(double center_lat, double center_lon, float fetch_radius_km) {
   }
 
   s_aircraft_count = n;
-  Serial.printf("adsb: %u aircraft\n", static_cast<unsigned>(n));
+  Serial.printf("adsb: %u aircraft (api %u, skip ground=%u nopos=%u)\n",
+                static_cast<unsigned>(n), static_cast<unsigned>(api_ac),
+                static_cast<unsigned>(skipped_ground),
+                static_cast<unsigned>(skipped_nopos));
   return true;
 }
 

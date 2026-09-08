@@ -18,4 +18,7 @@ int32_t utcOffsetSeconds();
 /** True after at least one successful NTP sync. */
 bool isSynced();
 
+/** If NTP has not synced yet, periodically restart SNTP (call from loop). */
+void retryIfNeeded();
+
 }  // namespace services::time_sync

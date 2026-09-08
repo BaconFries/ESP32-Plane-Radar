@@ -158,6 +158,11 @@ void init() {
     normalizeZip(z.c_str(), s_zip, sizeof(s_zip));
   }
   prefs.end();
+  Serial.printf("Radar center: %.5f, %.5f", s_lat, s_lon);
+  if (s_zip[0] != '\0') {
+    Serial.printf(" (ZIP %s)", s_zip);
+  }
+  Serial.println();
 }
 
 double lat() { return s_lat; }

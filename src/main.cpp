@@ -336,7 +336,7 @@ void setup() {
   services::location::init();
   ui::radar::rangeInit();
   services::flight_track::init();
-  services::adsb::setPollFn(wifiLoop);
+  // Do not setPollFn(wifiLoop): WiFiManager::process during TLS corrupts ADS-B reads.
 
   if (wifiSetupConnect()) {
     services::time_sync::begin();
@@ -344,6 +344,13 @@ void setup() {
     services::weather::fetchUpdate(services::location::lat(),
                                    services::location::lon());
     ui::nightDimInvalidate();
+    // Give SNTP a short window before first paint (offset no longer restarts NTP).
+    const unsigned long ntp_wait_start = millis();
+    while (!services::time_sync::isSynced() &&
+           millis() - ntp_wait_start < 3000UL) {
+      delay(50);
+      wifiLoop();
+    }
     showBestScreen();
     pollTrackIfNeeded();
   }
@@ -389,6 +396,7 @@ void loop() {
       services::time_sync::begin();
       g_ntp_started = true;
     }
+    services::time_sync::retryIfNeeded();
     if (!g_radar_visible && !g_idle_visible && !g_track_visible) {
       showBestScreen();
     }

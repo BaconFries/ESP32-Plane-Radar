@@ -132,6 +132,11 @@ void idleClockDraw() {
 bool idleClockTick() {
   struct tm ti {};
   if (!getLocalTime(&ti, 0)) {
+    // Still waiting on NTP — keep the "Syncing time…" screen; retry paints
+    // when SNTP eventually succeeds (s_drawn_minute stays -1 until then).
+    if (s_drawn_minute != -1) {
+      idleClockDraw();
+    }
     return false;
   }
   const int minute = ti.tm_hour * 60 + ti.tm_min;
